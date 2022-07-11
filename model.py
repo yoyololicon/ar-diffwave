@@ -1,6 +1,6 @@
 import math
 from random import uniform
-from turtle import forward
+from torch import optim
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -42,10 +42,8 @@ class ResidualBlock(nn.Module):
         res = y[:, :self.channels]
         skip = y[:, self.channels:]
         if self.last_layer:
-            skip = res
-            res = None
-        else:
-            res = (res + x) * 0.70710678118654757
+            return None, res
+        res = (res + x) * 0.70710678118654757
         return res, skip
 
 
@@ -85,21 +83,50 @@ class DiffusionEmbedding(nn.Module):
 
 
 class ARDiffWave(pl.LightningModule):
+    @staticmethod
+    def add_model_specific_args(parent_parser):
+        parser = parent_parser.add_argument_group("LitModel")
+        parser.add_argument("--sr", type=int, default=16000)
+        parser.add_argument("--diff_channels", type=int, default=64)
+        parser.add_argument("--diff_layers", type=int, default=30)
+        parser.add_argument("--cycle_length", type=int, default=10)
+        parser.add_argument("--hop_length", type=int, default=256)
+        parser.add_argument("--n_fft", type=int, default=1024)
+        parser.add_argument("--d_model", type=int, default=128)
+        parser.add_argument("--nhead", type=int, default=4)
+        parser.add_argument("--trsfmr_layers", type=int, default=4)
+        parser.add_argument("--dim_feedforward", type=int, default=512)
+        parser.add_argument("--dropout", type=float, default=0.1)
+        return parent_parser
+
     def __init__(self,
-                 sr=16000,
-                 diff_channels=64,
-                 diff_layers=30,
-                 cycle_length=10,
-                 n_fft=1024,
-                 hop_length=256,
-                 d_model=128,
-                 nhead=4,
-                 dim_feedforward=512,
-                 dropout=0.1,
-                 trsfmr_layers=4,
-                 *args,
+                 sr,
+                 diff_channels,
+                 diff_layers,
+                 cycle_length,
+                 n_fft,
+                 hop_length,
+                 d_model,
+                 nhead,
+                 dim_feedforward,
+                 dropout,
+                 trsfmr_layers,
                  **kwargs) -> None:
-        super().__init__(*args, **kwargs)
+        super().__init__()
+
+        self.save_hyperparameters(ignore=list(kwargs.keys()))
+
+        diff_channels = self.hparams.diff_channels
+        diff_layers = self.hparams.diff_layers
+        cycle_length = self.hparams.cycle_length
+        n_fft = self.hparams.n_fft
+        hop_length = self.hparams.hop_length
+        d_model = self.hparams.d_model
+        nhead = self.hparams.nhead
+        dim_feedforward = self.hparams.dim_feedforward
+        dropout = self.hparams.dropout
+        trsfmr_layers = self.hparams.trsfmr_layers
+        sr = self.hparams.sr
 
         # construct te diffwave part
         self.input_projection = nn.Sequential(
@@ -128,18 +155,18 @@ class ARDiffWave(pl.LightningModule):
         # construct the melspec part
         self.feature_frontend = MelSpectrogram(
             sample_rate=sr, n_fft=n_fft, hop_length=hop_length,
-            n_mels=80, center=False
+            n_mels=80, normalized=True
         )
 
         self.emb_projection = nn.Linear(80, d_model, bias=False)
         self.emb_dropout = nn.Dropout(dropout)
 
-        decoder_layer = nn.TransformerEncoderLayer(
+        encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward,
             dropout=dropout, batch_first=True
         )
-        self.decoder = nn.TransformerEncoder(
-            decoder_layer, trsfmr_layers)
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer, trsfmr_layers)
 
         self.hidden_projection = nn.Linear(d_model, 80, bias=False)
         self.pe = PositionalEncoding(d_model)
@@ -152,7 +179,7 @@ class ARDiffWave(pl.LightningModule):
         self.gamma1 = torch.nn.Parameter(torch.tensor(3.6))
 
     def get_feature(self, x):
-        return self.feature_frontend(x).add_(1e-6).log_()
+        return self.feature_frontend(x).add_(1e-6).log10_().mul_(10).add_(60).relu_() / 80
 
     def diffusion_forward(self, audio, feature, diffusion_step):
         x = audio.unsqueeze(1)
@@ -164,9 +191,11 @@ class ARDiffWave(pl.LightningModule):
         condition = self.conditioner(feature).chunk(
             len(self.residual_layers), 1)
         skip = torch.zeros_like(x)
-        for i in range(len(self.residual_layers)):
-            x, s = self.residual_layers[i](x + diffusion_embs[i], condition[i])
+        for i, layer in enumerate(self.residual_layers):
+            res, s = layer(x + diffusion_embs[i], condition[i])
             skip += s
+            if res is not None:
+                x = res
 
         x = skip / math.sqrt(len(self.residual_layers))
         x = self.output_projection(x).squeeze(1)
@@ -178,7 +207,7 @@ class ARDiffWave(pl.LightningModule):
         feats = self.get_feature(cats).transpose(1, 2)
         embs = self.emb_dropout(self.emb_projection(
             feats)) + self.pe(feats.size(1))
-        h = self.decoder(embs)
+        h = self.encoder(embs)
         valid_length = z_t.size(1) // self.hop_length + 1
         h = h[:, -valid_length:, :]
         h = self.hidden_projection(h).transpose(1, 2)
@@ -219,7 +248,7 @@ class ARDiffWave(pl.LightningModule):
     def diffusion_loss(self, d_gamma_t, x, noise, noise_hat):
         log_alpha_1, log_var_1 = gamma2logas(self.gamma1)
 
-        x_flat = x.view(-1)
+        x_flat = x.reshape(-1)
         x_dot = x_flat @ x_flat / x_flat.numel()
 
         # prior loss KL(q(z_1| x) || p(z_1))
@@ -231,23 +260,32 @@ class ARDiffWave(pl.LightningModule):
 
         # diffusion loss
         diff = noise - noise_hat
+        diff = diff.view(-1)
         loss_T = 0.5 * d_gamma_t * diff @ diff / diff.numel()
         return loss_T, prior_loss, ll
+
+    def configure_optimizers(self):
+        return optim.Adam(self.parameters(), lr=0.0002)
 
 
 if __name__ == '__main__':
     from torchinfo import summary
-    model = ARDiffWave(trsfmr_layers=8, sr=16000).cuda()
+    model = ARDiffWave(16000, 64, 30, 10, 1024, 256, 128,
+                       4, 512, 0.1, trsfmr_layers=8).cuda()
 
     x = torch.randn(4, 16000).cuda()
     z = torch.randn(4, 16000).cuda()
     t = torch.rand(4).cuda()
+
+    h = model.get_feature(x)
+    print(h.max(), h.min())
+    exit()
 
     summary(model, input_data=(x, z, t), device='cuda',
             col_names=("input_size", "output_size", "num_params",
                        "mult_adds"),
             depth=2,
             row_settings=("depth", "var_names"))
-
+    model = model.to_torchscript()
     # y = model(z, x, t)
     # print(y.shape)
