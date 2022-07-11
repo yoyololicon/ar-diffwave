@@ -17,5 +17,5 @@ class PositionalEncoding(nn.Module):
             torch.exp(1j * position * div_term)).view(max_pos, d_embed)
         self.register_buffer('pe', pe)
 
-    def forward(self, seq_len):
+    def forward(self, seq_len: int):
         return self.pe[:seq_len].clone()
