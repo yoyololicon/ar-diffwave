@@ -15,7 +15,13 @@ def main(args):
     gpus = torch.cuda.device_count()
 
     lit_model = ARDiffWave(**args_dict)
-    wav_data = WavDataModule(**args_dict)
+
+    if args.ckpt_path:
+        state_dict = torch.load(args.ckpt_path, map_location="cpu")[
+            'WavDataModule']
+        wav_data = WavDataModule(**state_dict)
+    else:
+        wav_data = WavDataModule(**args_dict)
 
     callbacks = [
         ModelSummary(max_depth=2),
