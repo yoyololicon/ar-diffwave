@@ -150,7 +150,7 @@ class ARDiffWave(pl.LightningModule):
         self.diffusion_projection = nn.Linear(
             512, diff_channels * diff_layers, bias=False)
         self.conditioner = nn.Conv1d(
-            80, diff_channels * 2 * diff_layers, 1, bias=False)
+            d_model, diff_channels * 2 * diff_layers, 1, bias=False)
 
         # construct the melspec part
         self.feature_frontend = MelSpectrogram(
@@ -168,15 +168,17 @@ class ARDiffWave(pl.LightningModule):
         self.encoder = nn.TransformerEncoder(
             encoder_layer, trsfmr_layers)
 
-        self.hidden_projection = nn.Linear(d_model, 80, bias=False)
         self.pe = PositionalEncoding(d_model)
         self.feature_upsampler = nn.Upsample(
-            scale_factor=hop_length, mode='linear')
+            scale_factor=hop_length, mode='nearest')
         self.hop_length = hop_length
 
         # construct diffusion parameters
         self.gamma0 = torch.nn.Parameter(torch.tensor(-23.))
         self.gamma1 = torch.nn.Parameter(torch.tensor(3.6))
+
+    def get_gamma(self, t):
+        return self.gamma0 + (self.gamma1 - self.gamma0) * t
 
     def get_feature(self, x):
         return self.feature_frontend(x).add_(1e-6).log10_().mul_(10).add_(60).relu_() / 80
@@ -209,8 +211,7 @@ class ARDiffWave(pl.LightningModule):
             feats)) + self.pe(feats.size(1))
         h = self.encoder(embs)
         valid_length = z_t.size(1) // self.hop_length + 1
-        h = h[:, -valid_length:, :]
-        h = self.hidden_projection(h).transpose(1, 2)
+        h = h[:, -valid_length:, :].transpose(1, 2)
 
         upsampled_h = self.feature_upsampler(h)[..., -z_t.shape[1]:]
         return self.diffusion_forward(z_t, upsampled_h, diffusion_step)
@@ -223,7 +224,7 @@ class ARDiffWave(pl.LightningModule):
         noise = torch.randn_like(x)
 
         t = (uniform(0, 1) + torch.arange(N, device=self.device)) / N
-        gamma = self.gamma0 + (self.gamma1 - self.gamma0) * t
+        gamma = self.get_gamma(t)
 
         alpha_t, var_t = gamma2as(gamma)
         z_t = alpha_t[:, None] * x + var_t.sqrt()[:, None] * noise
