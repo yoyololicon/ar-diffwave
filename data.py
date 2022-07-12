@@ -36,11 +36,11 @@ class WavDataModule(pl.LightningDataModule):
             "data_dir": self.data_dir,
             "size": self.size,
             "segment": self.segment,
-            "deterministic": self.deterministic,
+            "deterministic_data": self.deterministic,
         }
 
     def load_state_dict(self, state_dict):
         self.data_dir = state_dict["data_dir"]
         self.size = state_dict["size"]
         self.segment = state_dict["segment"]
-        self.deterministic = state_dict["deterministic"]
+        self.deterministic = state_dict["deterministic_data"]
