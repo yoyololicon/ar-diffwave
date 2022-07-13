@@ -209,7 +209,11 @@ class ARDiffWave(pl.LightningModule):
         feats = self.get_feature(cats).transpose(1, 2)
         embs = self.emb_dropout(self.emb_projection(
             feats)) + self.pe(feats.size(1))
-        h = self.encoder(embs)
+        mask = torch.triu(
+            embs.new_ones((embs.size(1), embs.size(1)), dtype=torch.bool),
+            diagonal=1,
+        )
+        h = self.encoder(embs, mask=mask)
         valid_length = z_t.size(1) // self.hop_length + 1
         h = h[:, -valid_length:, :].transpose(1, 2)
 
