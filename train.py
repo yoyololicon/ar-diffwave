@@ -4,6 +4,7 @@ from pytorch_lightning.callbacks import ModelSummary, LearningRateMonitor
 from pytorch_lightning.strategies.ddp import DDPStrategy
 from argparse import ArgumentParser
 from model import ARDiffWave
+from unet import UNet
 from data import WavDataModule
 
 
@@ -14,7 +15,10 @@ def main(args):
 
     gpus = torch.cuda.device_count()
 
-    lit_model = ARDiffWave(**args_dict)
+    if args.ckpt_path:
+        lit_model = UNet.load_from_checkpoint(args.ckpt_path)
+    else:
+        lit_model = UNet(**args_dict)
 
     if args.ckpt_path:
         state_dict = torch.load(args.ckpt_path, map_location="cpu")[
@@ -38,7 +42,7 @@ def main(args):
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser = pl.Trainer.add_argparse_args(parser)
-    parser = ARDiffWave.add_model_specific_args(parser)
+    parser = UNet.add_model_specific_args(parser)
     parser = WavDataModule.add_data_specific_args(parser)
     parser.add_argument("--ckpt-path", type=str)
 
