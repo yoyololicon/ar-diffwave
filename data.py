@@ -14,9 +14,8 @@ class WavDataModule(pl.LightningDataModule):
         parser.add_argument("--deterministic-data", action="store_true")
         return parent_parser
 
-    def __init__(self, batch_size=4, data_dir: str = "", size: int = 4000, segment: int = 16000, deterministic_data: bool = False,
-                 train_transforms=None, val_transforms=None, test_transforms=None, dims=None, **kwargs):
-        super().__init__(train_transforms, val_transforms, test_transforms, dims)
+    def __init__(self, batch_size=4, data_dir: str = "", size: int = 4000, segment: int = 16000, deterministic_data: bool = False, **kwargs):
+        super().__init__()
         self.data_dir = data_dir
         self.size = size
         self.segment = segment
@@ -29,7 +28,7 @@ class WavDataModule(pl.LightningDataModule):
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset, batch_size=self.batch_size,
-                          pin_memory=True, num_workers=8, prefetch_factor=4)
+                          pin_memory=True, num_workers=4, prefetch_factor=4)
 
     def state_dict(self):
         return {
@@ -37,6 +36,7 @@ class WavDataModule(pl.LightningDataModule):
             "size": self.size,
             "segment": self.segment,
             "deterministic_data": self.deterministic,
+            "batch_size": self.batch_size,
         }
 
     def load_state_dict(self, state_dict):
@@ -44,3 +44,4 @@ class WavDataModule(pl.LightningDataModule):
         self.size = state_dict["size"]
         self.segment = state_dict["segment"]
         self.deterministic = state_dict["deterministic_data"]
+        self.batch_size = state_dict["batch_size"]
